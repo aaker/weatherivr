@@ -1,5 +1,4 @@
 <?php
-require "creds.php";
 session_start();
 header("Content-Type: text/xml");
 
@@ -24,68 +23,97 @@ function forward($location)
 
 
 
-function yahooZip($zip)
+function openweathermap($zip)
 {
-    $BASE_URL = "http://query.yahooapis.com/v1/public/yql";
-    $yql_query = 'select * from weather.forecast where woeid in (select woeid from geo.places(1) where text="'.$zip.'")';
-    $yql_query_url = $BASE_URL . "?q=" . urlencode($yql_query) . "&format=json";
-    // Make call with cURL
-    $session = curl_init($yql_query_url);
+
+    $url = "https://api.openweathermap.org/data/2.5/weather?zip=".$zip.",us&appid=2f3478d18778c6ab48936f69400579c5&units=imperial";
+    $session = curl_init($url);
     curl_setopt($session, CURLOPT_RETURNTRANSFER,true);
     $json = curl_exec($session);
-    // Convert JSON to PHP object
     $phpObj =  json_decode($json,true);
-    //print_r($phpObj);
 
-    $city = $phpObj['query']['results']['channel']['location']['city'];
+    $city = $phpObj['name'];
 
-    $currentText = $phpObj['query']['results']['channel']['item']['condition']['text'];
-    $currentTemp = $phpObj['query']['results']['channel']['item']['condition']['temp'];
-
-    $tomorrowText = $phpObj['query']['results']['channel']['item']['forecast'][1]['text'];
-    $tomorrowTemp = $phpObj['query']['results']['channel']['item']['forecast'][1]['high'];
+    $currentText = $phpObj['weather'][0]['description'];
+    $currentTemp = $phpObj['main']['temp'];
 
     $speech = "The current weather for ".$city." is ".$currentText." and ".$currentTemp." degrees. ";
-    $speech .= "Expect a high tomorrow of ". $tomorrowTemp. " with a forcast of ". $tomorrowText;
 
     return $speech;
 
 }
 
-function awsSpeech($speech)
+function getAudioFile($speech)
 {
-    global $aws_token;
-    global $aws_key;
-    
-    require 'vendor/autoload.php';
-    $s3 = new Aws\Polly\PollyClient([
-      'version'     => 'latest',
-      'region'      => 'us-west-2',
-      'credentials' => [
-        'key'    => $aws_token,
-        'secret' => $aws_key
-      ]
-    ]);
+    //This next line shoudl be replaced with a authenticated oauth token in best practice.
+    $url = "https://local:only@127.0.0.1/ns-api/?object=voice&action=token&domain=netsapiens.cloud";
+    $session = curl_init($url);
+    curl_setopt($session, CURLOPT_RETURNTRANSFER,true);
+    curl_setopt($session, CURLOPT_SSL_VERIFYHOST, 0);
+    curl_setopt($session, CURLOPT_SSL_VERIFYPEER, 0);
+    $json = curl_exec($session);
+    $phpObj =  json_decode($json,true);
 
-    $result = $s3->synthesizeSpeech([
-        'LexiconNames' => [],
-        'OutputFormat' => 'mp3',
-        'SampleRate' => '8000',
-        'Text' => $speech,
-        'TextType' => 'text',
-        'VoiceId' => 'Joanna',
-    ]);
+    curl_close($session);
 
-    $tmpName = "polly".uniqid();
-    file_put_contents("/tmp/".$tmpName.".mp3",
-      $result['AudioStream']->getContents() );
-    $cmd1 = '/usr/bin/mpg123 -w '."/tmp/".$tmpName.
-      '.wav '."/tmp/".$tmpName.'.mp3';
-    $cmd2 = '/usr/bin/sox '."/tmp/".$tmpName.'.wav '.
-      ' -e mu-law -r 8000 -c 1 -b 8 '."audio/".$tmpName.".wav";
+    $token = $phpObj['token'];
+    $serviceBaseUri = $phpObj['serviceBaseUri'];
+
+    $url = $serviceBaseUri . '/voices?language=en-US';
+
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, array('Content-Type:application/json', 'Authorization: Bearer ' . $token));
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+    $output = curl_exec($ch);
+    $phpObj =  json_decode($output,true);
+    $voices = $phpObj['voices'];
+
+    $voice = false;
+    for ($i = 0; $i < count($voices); $i++) {
+        if (isset($voices[$i]['id']) && $voices[$i]['name'] == "Brian")
+        {
+          $voice = $voices[$i];
+          break;
+        }
+    }
+    curl_close($ch);
+
+
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $serviceBaseUri . '/tts');
+    curl_setopt($ch, CURLOPT_HTTPHEADER, array('Content-Type:application/json', 'Authorization: Bearer ' . $token));
+    $data = json_encode(array('voice' => $voice, 'text' => $speech));
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $data );
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+    $output = curl_exec($ch);
+    curl_close($ch);
+
+
+    $output = json_decode($output, true);
+    $tmp_name = 'tts_'.uniqid();
+    $binary = "";
+    for($index = 0; $index < count($output['audioStream']['data']); $index++)
+    {
+        $binary = $binary.pack("C*", $output['audioStream']['data'][$index]);
+    }
+
+    file_put_contents("/var/www/html/weatherivr/audio/".$tmp_name, $binary);
+
+    $cmd1 = '/usr/bin/mpg123 -w '."/tmp/".$tmp_name.'.wav '."/var/www/html/weatherivr/audio/".$tmp_name;
+
+    $cmd2 = '/usr/bin/sox '."/tmp/".$tmp_name.'.wav  -e mu-law -r 8000 -c 1 -b 8 '."/var/www/html/weatherivr/audio/".$tmp_name.".wav";
     exec($cmd1);
     exec($cmd2);
-    return "audio/".$tmpName.".wav";
+
+
+    return "https://".$_SERVER['SERVER_NAME']."/weatherivr/audio/".$tmp_name.".wav";
+
 }
 
 
@@ -93,14 +121,13 @@ function awsSpeech($speech)
 if (!isset($_REQUEST["case"])) {
   $speech = "Thank you for calling the NetSapiens UGM weather application. ";
   $speech .= "Please enter a zip code to get a weather report";
-  gather(5,"weather.php?case=playzip",awsSpeech($speech));
+  gather(5,"weather.php?case=playzip",getAudioFile($speech));
 
 }
 else if ($_REQUEST["case"] == "playzip") {
 
-  $speech = yahooZip($_REQUEST["Digits"]);
-
-  $audioPath = awsSpeech($speech);
+  $speech = openweathermap($_REQUEST["Digits"]);
+  $audioPath = getAudioFile($speech);
 
   play("weather.php",$audioPath);
 }
