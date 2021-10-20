@@ -68,7 +68,6 @@ function getVoice($name,$token,$serviceBaseUri)
   $output = curl_exec($ch);
   $phpObj =  json_decode($output,true);
   $voices = $phpObj['voices'];
-
   $voice = false;
   for ($i = 0; $i < count($voices); $i++) {
       if (isset($voices[$i]['id']) && $voices[$i]['name'] == $name)
@@ -139,9 +138,14 @@ function writeFile($output)
 }
 
 
-
-
-
+/**
+ * getAudioFile()
+ *
+ * Takes the response from the voice services api and writes it into a netsapiens compatable wav.
+ *
+ * @param string $speech The string you wish to synthesize to a wav file
+ * @return string The url the file will be available at.
+ */
 function getAudioFile($speech)
 {
     //This next line shoudl be replaced with a authenticated oauth token in best practice.
@@ -165,15 +169,18 @@ function getAudioFile($speech)
 
 
 if (!isset($_REQUEST["case"])) {
+  /* The Entry point of the Application */
   $speech = "Thank you for calling the NetSapiens UGM weather application. ";
   $speech .= "Please enter a zip code to get a weather report";
   gather(5,"weather.php?case=playzip",getAudioFile($speech));
 }
 else if ($_REQUEST["case"] == "playzip") {
+  /* The main playback state once we have a zip code */
   $speech = openweathermap($_REQUEST["Digits"]);
   $audioPath = getAudioFile($speech);
   play("weather.php?case=forward",$audioPath);
 }
 else if ($_REQUEST["case"] == "forward") {
+  /* Exit case forward to DID */
   forward("18587645200"); //NS Main number
 }
